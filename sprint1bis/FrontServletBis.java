@@ -25,7 +25,7 @@ public class FrontServletBis {
                 dispatcher.forward(request, response);
             } else {
         response.setContentType("text/html;charset=UTF-8");
-        response.getWriter().println("<h1>URL demandee : " + path + "</h1>");
+        response.getWriter().println("<h1>URL : " + path + "</h1>");
             }
     }
     
