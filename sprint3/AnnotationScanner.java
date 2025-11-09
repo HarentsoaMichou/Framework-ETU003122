@@ -1,29 +1,47 @@
-package sprint2bis;
+package sprint3;
 
-import sprint2bis.annotations.MonAnnotation;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.CommandLineRunner;
-import org.springframework.context.ApplicationContext;
-import org.springframework.stereotype.Component;
+import sprint2bis.AnnotationClasse;
+import sprint2.AnnotationMethode;
+import org.reflections.Reflections;
+import java.lang.reflect.Method;
+import java.util.*;
 
-@Component
-public class AnnotationScanner implements CommandLineRunner {
+public class AnnotationScanner {
 
-    @Autowired
-    private ApplicationContext context;
+    private static final String BASE_PACKAGE = "testAnnotations";
+    private static final Map<String, List<String>> annotatedMap = new HashMap<>();
 
-    @Override
-    public void run(String... args) {
+    static {
+        scanAnnotations();
+    }
 
-        String[] allBeans = context.getBeanDefinitionNames();
-        for (String beanName : allBeans) {
-            Object bean = context.getBean(beanName);
-            Class<?> clazz = bean.getClass();
+    private static void scanAnnotations() {
+        Reflections reflections = new Reflections(BASE_PACKAGE);
 
-            if (clazz.isAnnotationPresent(MonAnnotation.class)) {
-                MonAnnotation annotation = clazz.getAnnotation(MonAnnotation.class);
-                System.out.println(clazz.getName() + " -> valeur : " + annotation.value());
+        Set<Class<?>> allClasses = reflections.getSubTypesOf(Object.class);
+
+        for (Class<?> clazz : allClasses) {
+            List<String> annotatedMethods = new ArrayList<>();
+
+            // Vérifie si la classe a l'annotation
+            if (clazz.isAnnotationPresent(AnnotationClasse.class)) {
+                annotatedMethods.add("[Classe annotée]");
+            }
+
+            // Vérifie les méthodes
+            for (Method method : clazz.getDeclaredMethods()) {
+                if (method.isAnnotationPresent(AnnotationMethode.class)) {
+                    annotatedMethods.add(method.getName());
+                }
+            }
+
+            if (!annotatedMethods.isEmpty()) {
+                annotatedMap.put(clazz.getSimpleName(), annotatedMethods);
             }
         }
+    }
+
+    public static Map<String, List<String>> getAnnotatedClasses() {
+        return annotatedMap;
     }
 }
