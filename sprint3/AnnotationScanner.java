@@ -43,24 +43,14 @@ public class AnnotationScanner extends HttpServlet {
         out.println("<html>");
         out.println("<head>");
         out.println("<title>Scan des Annotations</title>");
-        out.println("<style>");
-        out.println("body { font-family: Arial, sans-serif; margin: 40px; }");
-        out.println("h1 { color: #333; }");
-        out.println(".class-box { border: 2px solid #4CAF50; padding: 15px; margin: 20px 0; border-radius: 5px; }");
-        out.println(".class-name { font-size: 20px; font-weight: bold; color: #4CAF50; }");
-        out.println(".annotation { margin: 10px 0; padding: 10px; background: #f0f0f0; }");
-        out.println(".yes { color: green; font-weight: bold; }");
-        out.println(".no { color: red; }");
-        out.println(".method { margin-left: 20px; color: #2196F3; }");
-        out.println("</style>");
         out.println("</head>");
         out.println("<body>");
-        out.println("<h1> Résultat du Scan des Annotations</h1>");
-        out.println("<p>Nombre de classes scannées : <strong>" + scannedClasses.size() + "</strong></p>");
+        out.println("<h1> Resultat du Scan des Annotations</h1>");
+        out.println("<p>Nombre de classes scannees : <strong>" + scannedClasses.size() + "</strong></p>");
         
         for (ClassInfo info : scannedClasses) {
             out.println("<div class='class-box'>");
-            out.println("<div class='class-name'>🔹 " + info.className + "</div>");
+            out.println("<div class='class-name'>" + info.className + "</div>");
             
             if (info.hasClassAnnotation) {
                 out.println("<div class='annotation'>");
@@ -72,13 +62,13 @@ public class AnnotationScanner extends HttpServlet {
             
             if (!info.annotatedMethods.isEmpty()) {
                 out.println("<div class='annotation'>");
-                out.println("<strong>Méthodes annotées :</strong>");
+                out.println("<strong>Methodes annotees :</strong>");
                 for (MethodInfo method : info.annotatedMethods) {
                     out.println("<div class='method'>→ " + method.methodName + " : \"" + method.value + "\"</div>");
                 }
                 out.println("</div>");
             } else {
-                out.println("<div class='annotation'><span class='no'>Pas de méthode annotée</span></div>");
+                out.println("<div class='annotation'><span class='no'>Pas de methode annotee</span></div>");
             }
             
             out.println("</div>");
@@ -136,16 +126,16 @@ public class AnnotationScanner extends HttpServlet {
         ClassInfo info = new ClassInfo();
         info.className = clazz.getSimpleName();
         
-        System.out.println("🔸 Classe: " + clazz.getSimpleName());
+        System.out.println("Classe: " + clazz.getSimpleName());
         
         // Vérifier l'annotation de classe
         if (clazz.isAnnotationPresent(AnnotationClasse.class)) {
             AnnotationClasse annClasse = clazz.getAnnotation(AnnotationClasse.class);
             info.hasClassAnnotation = true;
             info.classAnnotationValue = annClasse.value();
-            System.out.println("   └─ Annotation classe: Oui → Valeur: \"" + annClasse.value() + "\"");
+            System.out.println(" Annotation classe: Oui : Valeur: \"" + annClasse.value() + "\"");
         } else {
-            System.out.println("   └─ Annotation classe: Non");
+            System.out.println(" Annotation classe: Non");
         }
         
         // Vérifier les méthodes annotées
@@ -156,13 +146,13 @@ public class AnnotationScanner extends HttpServlet {
                 methodInfo.methodName = method.getName();
                 methodInfo.value = annMethode.value();
                 info.annotatedMethods.add(methodInfo);
-                System.out.println("   └─ Méthode annotée: " + method.getName() + 
-                                 " → Valeur: \"" + annMethode.value() + "\"");
+                System.out.println("Methode annotee: " + method.getName() + 
+                                 "Valeur: \"" + annMethode.value() + "\"");
             }
         }
         
         if (info.annotatedMethods.isEmpty()) {
-            System.out.println("   └─ Méthodes annotées: Aucune");
+            System.out.println("Methodes annotees: Aucune");
         }
         
         System.out.println();
