@@ -1,4 +1,4 @@
-package sprint2bis;
+package framework.annotations;
 
 import java.lang.annotation.*;
 

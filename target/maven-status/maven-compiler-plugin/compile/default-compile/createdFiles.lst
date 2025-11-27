@@ -1,0 +1,6 @@
+framework\annotations\AnnotationMethode.class
+framework\servlet\FrontServlet.class
+framework\service\Mapping.class
+framework\service\ScanController.class
+framework\annotations\AnnotationClasse.class
+framework\service\ModelView.class

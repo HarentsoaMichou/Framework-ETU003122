@@ -1,4 +1,4 @@
-package sprint2;
+package framework.annotations;
 
 import java.lang.annotation.*;
 
