@@ -322,54 +322,57 @@ private Object[] prepareMethodArguments(Method method, Map<String, String> urlPa
         java.lang.reflect.Parameter param = parameters[i];
         Class<?> paramType = paramTypes[i];
         
-        // NOUVEAU : Vérifier si c'est un paramètre Map<String, Object>
+        // 1. Vérifier si c'est un paramètre Map<String, Object>
         if (isParamsMap(paramType, param)) {
             args[i] = allParams;
             System.out.println("    Map<String, Object> injectée avec " + allParams.size() + " paramètre(s)");
             continue;
         }
         
-        // Sinon, traitement normal des paramètres
+        // 2. NOUVEAU : Vérifier si c'est un objet custom à binder
+        if (isCustomObject(paramType)) {
+            try {
+                Object boundObject = bindObject(paramType, request, allParams);
+                args[i] = boundObject;
+                System.out.println("    Objet bindé : " + paramType.getSimpleName() + 
+                                 " avec " + countFilledFields(boundObject) + " champ(s) rempli(s)");
+            } catch (Exception e) {
+                System.err.println("    Erreur de binding pour " + paramType.getSimpleName() + " : " + e.getMessage());
+                throw new RuntimeException("Erreur de binding : " + e.getMessage(), e);
+            }
+            continue;
+        }
+        
+        // 3. Sinon, traitement normal des paramètres primitifs
         String paramValue = null;
         String paramName = null;
-        String source = "";
         
         Param paramAnnotation = param.getAnnotation(Param.class);
         
         if (paramAnnotation != null) {
             paramName = paramAnnotation.value();
-            
             if (remainingUrlParams.containsKey(paramName)) {
                 paramValue = remainingUrlParams.get(paramName);
                 remainingUrlParams.remove(paramName);
-                source = "URL dynamique {" + paramName + "}";
             } else {
                 paramValue = request.getParameter(paramName);
-                source = "Formulaire/Query";
             }
-            
         } else {
             paramName = param.getName();
-            
             if (remainingUrlParams.containsKey(paramName)) {
                 paramValue = remainingUrlParams.get(paramName);
                 remainingUrlParams.remove(paramName);
-                source = "URL dynamique {" + paramName + "}";
             } else if (!remainingUrlParams.isEmpty()) {
                 String firstKey = remainingUrlParams.keySet().iterator().next();
                 paramValue = remainingUrlParams.get(firstKey);
                 remainingUrlParams.remove(firstKey);
-                source = "URL dynamique {" + firstKey + "}";
             } else {
                 paramValue = request.getParameter(paramName);
-                source = "Formulaire/Query";
             }
         }
         
         if (paramValue != null) {
             args[i] = convertParameter(paramValue, paramType);
-            System.out.println("    [" + source + "] " + paramName + " : " + args[i] + 
-                             " (" + paramType.getSimpleName() + ")");
         } else {
             args[i] = getDefaultValue(paramType);
         }
@@ -377,6 +380,242 @@ private Object[] prepareMethodArguments(Method method, Map<String, String> urlPa
     
     System.out.println();
     return args;
+}
+
+/**
+ * Vérifier si un type est un objet custom (pas un type standard)
+ */
+private boolean isCustomObject(Class<?> type) {
+    // Types standards à exclure
+    if (type.isPrimitive()) return false;
+    if (type == String.class) return false;
+    if (type == Integer.class) return false;
+    if (type == Long.class) return false;
+    if (type == Double.class) return false;
+    if (type == Float.class) return false;
+    if (type == Boolean.class) return false;
+    if (type == Character.class) return false;
+    if (type == Byte.class) return false;
+    if (type == Short.class) return false;
+    if (type == java.util.Date.class) return false;
+    if (type == java.time.LocalDate.class) return false;
+    if (type == java.time.LocalDateTime.class) return false;
+    if (Map.class.isAssignableFrom(type)) return false;
+    if (type.isArray()) return false;
+    
+    // Si c'est dans java.* ou jakarta.* → pas custom
+    if (type.getName().startsWith("java.")) return false;
+    if (type.getName().startsWith("jakarta.")) return false;
+    
+    // Sinon, c'est un objet custom
+    return true;
+}
+
+/**
+ * Binder un objet custom à partir des paramètres de la requête
+ */
+private Object bindObject(Class<?> type, HttpServletRequest request, Map<String, Object> allParams) 
+        throws Exception {
+    
+    System.out.println("    Binding de " + type.getSimpleName() + "...");
+    
+    // Créer une instance avec le constructeur sans arguments
+    Object instance = type.getDeclaredConstructor().newInstance();
+    
+    // Récupérer tous les champs de la classe
+    java.lang.reflect.Field[] fields = type.getDeclaredFields();
+    
+    for (java.lang.reflect.Field field : fields) {
+        String fieldName = field.getName();
+        Class<?> fieldType = field.getType();
+        
+        // Essayer de trouver le setter
+        String setterName = "set" + Character.toUpperCase(fieldName.charAt(0)) + fieldName.substring(1);
+        java.lang.reflect.Method setter = findSetter(type, setterName, fieldType);
+        
+        if (setter == null) {
+            System.out.println("       Pas de setter pour " + fieldName);
+            continue;
+        }
+        
+        // Chercher la valeur du paramètre
+        Object value = findParameterValue(fieldName, fieldType, request, allParams);
+        
+        if (value != null) {
+            try {
+                setter.invoke(instance, value);
+                System.out.println("       " + fieldName + " = " + value + " (" + fieldType.getSimpleName() + ")");
+            } catch (Exception e) {
+                System.err.println("       Erreur setter " + fieldName + " : " + e.getMessage());
+            }
+        }
+    }
+    
+    return instance;
+}
+
+/**
+ * Trouver un setter pour un champ
+ */
+private java.lang.reflect.Method findSetter(Class<?> clazz, String setterName, Class<?> paramType) {
+    try {
+        return clazz.getMethod(setterName, paramType);
+    } catch (NoSuchMethodException e) {
+        return null;
+    }
+}
+
+/**
+ * Trouver la valeur d'un paramètre pour un champ
+ * Supporte : camelCase, snake_case, et notation pointée (objet.champ)
+ */
+private Object findParameterValue(String fieldName, Class<?> fieldType, 
+                                  HttpServletRequest request, Map<String, Object> allParams) {
+    
+    // 1. Si c'est un objet custom imbriqué → binding récursif avec notation pointée
+    if (isCustomObject(fieldType)) {
+        try {
+            return bindNestedObject(fieldName, fieldType, request, allParams);
+        } catch (Exception e) {
+            System.err.println("       Erreur binding objet imbriqué " + fieldName + " : " + e.getMessage());
+            return null;
+        }
+    }
+    
+    // 2. Essayer avec le nom exact (camelCase)
+    String paramValue = request.getParameter(fieldName);
+    if (paramValue != null) {
+        return convertToType(paramValue, fieldType);
+    }
+    
+    // 3. Essayer avec snake_case (idDepartement → id_departement)
+    String snakeCaseName = camelToSnakeCase(fieldName);
+    paramValue = request.getParameter(snakeCaseName);
+    if (paramValue != null) {
+        return convertToType(paramValue, fieldType);
+    }
+    
+    // 4. Essayer dans allParams (déjà converti)
+    if (allParams.containsKey(fieldName)) {
+        return convertToType(String.valueOf(allParams.get(fieldName)), fieldType);
+    }
+    
+    if (allParams.containsKey(snakeCaseName)) {
+        return convertToType(String.valueOf(allParams.get(snakeCaseName)), fieldType);
+    }
+    
+    return null;
+}
+
+/**
+ * Binder un objet imbriqué avec notation pointée (ex: departement.id)
+ */
+private Object bindNestedObject(String prefix, Class<?> type, 
+                                HttpServletRequest request, Map<String, Object> allParams) 
+        throws Exception {
+    
+    System.out.println("       Binding objet imbriqué : " + prefix + " (" + type.getSimpleName() + ")");
+    
+    Object instance = type.getDeclaredConstructor().newInstance();
+    java.lang.reflect.Field[] fields = type.getDeclaredFields();
+    
+    for (java.lang.reflect.Field field : fields) {
+        String fieldName = field.getName();
+        Class<?> fieldType = field.getType();
+        
+        // Chercher avec notation pointée : prefix.fieldName
+        String dottedName = prefix + "." + fieldName;
+        String paramValue = request.getParameter(dottedName);
+        
+        if (paramValue != null) {
+            String setterName = "set" + Character.toUpperCase(fieldName.charAt(0)) + fieldName.substring(1);
+            java.lang.reflect.Method setter = findSetter(type, setterName, fieldType);
+            
+            if (setter != null) {
+                Object value = convertToType(paramValue, fieldType);
+                setter.invoke(instance, value);
+                System.out.println("          " + dottedName + " = " + value);
+            }
+        }
+    }
+    
+    return instance;
+}
+
+/**
+ * Convertir camelCase en snake_case
+ */
+private String camelToSnakeCase(String camelCase) {
+    return camelCase.replaceAll("([a-z])([A-Z])", "$1_$2").toLowerCase();
+}
+
+/**
+ * Convertir une String vers un type spécifique
+ */
+private Object convertToType(String value, Class<?> targetType) {
+    if (value == null || value.isEmpty()) {
+        return null;
+    }
+    
+    try {
+        if (targetType == String.class) {
+            return value;
+        } else if (targetType == int.class || targetType == Integer.class) {
+            return Integer.parseInt(value);
+        } else if (targetType == long.class || targetType == Long.class) {
+            return Long.parseLong(value);
+        } else if (targetType == double.class || targetType == Double.class) {
+            return Double.parseDouble(value);
+        } else if (targetType == float.class || targetType == Float.class) {
+            return Float.parseFloat(value);
+        } else if (targetType == boolean.class || targetType == Boolean.class) {
+            return Boolean.parseBoolean(value);
+        } else if (targetType == java.util.Date.class) {
+            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd");
+            return sdf.parse(value);
+        } else if (targetType == java.time.LocalDate.class) {
+            return java.time.LocalDate.parse(value);
+        } else if (targetType == java.time.LocalDateTime.class) {
+            return java.time.LocalDateTime.parse(value);
+        }
+    } catch (Exception e) {
+        System.err.println("       Erreur conversion : " + value + " vers " + targetType.getName());
+    }
+    
+    return null;
+}
+
+/**
+ * Compter les champs non-null d'un objet (pour logging)
+ */
+private int countFilledFields(Object obj) {
+    if (obj == null) return 0;
+    
+    int count = 0;
+    java.lang.reflect.Field[] fields = obj.getClass().getDeclaredFields();
+    
+    for (java.lang.reflect.Field field : fields) {
+        field.setAccessible(true);
+        try {
+            Object value = field.get(obj);
+            if (value != null) {
+                // Pour les primitifs, vérifier si différent de la valeur par défaut
+                if (field.getType().isPrimitive()) {
+                    if (field.getType() == int.class && (int) value != 0) count++;
+                    else if (field.getType() == long.class && (long) value != 0L) count++;
+                    else if (field.getType() == double.class && (double) value != 0.0) count++;
+                    else if (field.getType() == float.class && (float) value != 0.0f) count++;
+                    else if (field.getType() == boolean.class && (boolean) value) count++;
+                } else {
+                    count++;
+                }
+            }
+        } catch (IllegalAccessException e) {
+            // Ignorer
+        }
+    }
+    
+    return count;
 }
 
 /**
