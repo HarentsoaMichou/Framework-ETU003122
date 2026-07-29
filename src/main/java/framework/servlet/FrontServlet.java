@@ -6,6 +6,7 @@ import framework.service.JsonResponse;
 import framework.service.Mapping;
 import framework.service.ModelView;
 import framework.service.ScanController;
+import framework.service.SessionHandler;
 import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.annotation.MultipartConfig;
@@ -35,6 +36,7 @@ public class FrontServlet extends HttpServlet {
 
     // Structure : urlMappings.get("GET").get("/users") → Mapping
     private Map<String, Map<String, Mapping>> urlMappings;
+    private SessionHandler sessionHandler;   
 
     @Override
     public void init() throws ServletException {
@@ -42,6 +44,7 @@ public class FrontServlet extends HttpServlet {
         urlMappings.put("GET", new HashMap<>());
         urlMappings.put("POST", new HashMap<>());
         urlMappings.put("ALL", new HashMap<>()); // Pour @AnnotationMethode
+        sessionHandler = new SessionHandler();  
         
         
         System.out.println("INITIALISATION DU FRAMEWORK");
@@ -306,9 +309,22 @@ public class FrontServlet extends HttpServlet {
         Class<?> controllerClass = Class.forName(mapping.getClassName());
         Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
         
-        // Préparer les arguments (avec support @RequestBody pour JSON)
-        Object[] methodArgs = prepareMethodArgumentsWithJson(method, urlParams, request, isJson);
+        //  tracker les Maps de session injectées pour les resynchroniser après
+        List<Map<String, Object>> injectedSessionMaps = new ArrayList<>();
+        
+        // Préparer les arguments (avec support @RequestBody pour JSON et @Session)
+        Object[] methodArgs = prepareMethodArgumentsWithJson(method, urlParams, request, isJson, injectedSessionMaps);
         Object result = method.invoke(controllerInstance, methodArgs);
+        
+        //  resynchroniser les Maps @Session vers la HttpSession
+        for (Map<String, Object> sessionMap : injectedSessionMaps) {
+            sessionHandler.updateSessionData(request, sessionMap);
+        }
+        
+        //  si le résultat est un ModelView, sync la session depuis le ModelView
+        if (result instanceof ModelView) {
+            sessionHandler.updateSessionFromModelView(request, (ModelView) result);
+        }
         
         // Si c'est une méthode @Json, retourner du JSON
         if (isJson) {
@@ -328,11 +344,10 @@ public class FrontServlet extends HttpServlet {
     }
 }
 
-// Nouvelle méthode pour préparer les arguments avec support JSON
-
-// Modifier prepareMethodArgumentsWithJson pour supporter les fichiers
+// Préparer les arguments avec support JSON, fichiers et sessions ()
 private Object[] prepareMethodArgumentsWithJson(Method method, Map<String, String> urlParams, 
-                                                HttpServletRequest request, boolean isJsonMethod) 
+                                                HttpServletRequest request, boolean isJsonMethod,
+                                                List<Map<String, Object>> injectedSessionMaps) 
         throws Exception {
     
     Class<?>[] paramTypes = method.getParameterTypes();
@@ -360,7 +375,25 @@ private Object[] prepareMethodArgumentsWithJson(Method method, Map<String, Strin
         java.lang.reflect.Parameter param = parameters[i];
         Class<?> paramType = paramTypes[i];
         
-        // 1. NOUVEAU : Vérifier si c'est un fichier uploadé (Part)
+        // 0.  : Vérifier si c'est un paramètre @Session
+        if (param.isAnnotationPresent(Session.class)) {
+            Map<String, Object> sessionData = sessionHandler.extractSessionData(request);
+            args[i] = sessionData;
+            injectedSessionMaps.add(sessionData);  // tracker pour resync après
+            System.out.println("    @Session injectée : " + sessionData.size() + " attribut(s)");
+            continue;
+        }
+        
+        //  : Vérifier si c'est un ModelView (injecter la session dedans)
+        if (paramType == ModelView.class) {
+            ModelView mv = new ModelView();
+            sessionHandler.injectSessionIntoModelView(request, mv);
+            args[i] = mv;
+            System.out.println("    ModelView injecté avec session");
+            continue;
+        }
+        
+        // 1. Vérifier si c'est un fichier uploadé (Part)
         if (paramType == Part.class) {
             String paramName = param.getName();
             Part part = request.getPart(paramName);
@@ -1086,6 +1119,18 @@ private Object smartConvert(String value) {
         } else if (result instanceof ModelView) {
             ModelView mv = (ModelView) result;
             if (mv.getView() != null && !mv.getView().isEmpty()) {
+                // Transférer les données du ModelView vers les attributs de la requête
+                if (mv.getData() != null) {
+                    for (Map.Entry<String, Object> entry : mv.getData().entrySet()) {
+                        request.setAttribute(entry.getKey(), entry.getValue());
+                    }
+                }
+                //  : exposer aussi les attributs de session à la JSP
+                if (mv.getSession() != null) {
+                    for (Map.Entry<String, Object> entry : mv.getSession().entrySet()) {
+                        request.setAttribute("session_" + entry.getKey(), entry.getValue());
+                    }
+                }
                 RequestDispatcher dispatcher = getServletContext().getRequestDispatcher("/" + mv.getView());
                 dispatcher.forward(request, response);
             }
