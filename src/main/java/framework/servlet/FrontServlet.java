@@ -1,6 +1,7 @@
 package framework.servlet;
 
 import framework.annotations.*;
+import framework.service.JsonResponse;
 import framework.service.Mapping;
 import framework.service.ModelView;
 import framework.service.ScanController;
@@ -271,31 +272,234 @@ public class FrontServlet extends HttpServlet {
         return null;
     }
 
+    // pour détecter @Json
+    private boolean isJsonMethod(Method method) {
+        return method.isAnnotationPresent(Json.class);
+    }
+
     private void handleMappedUrl(HttpServletRequest request, HttpServletResponse response, 
-                                String path, Mapping mapping, Map<String, String> urlParams) 
-            throws ServletException, IOException {
+                            String path, Mapping mapping, Map<String, String> urlParams) 
+        throws ServletException, IOException {
+    
+    Method method = mapping.getMethod();
+    
+    // Vérifier si la méthode retourne du JSON
+    boolean isJson = isJsonMethod(method);
+    
+    if (urlParams == null && mapping.hasDynamicParams()) {
+        urlParams = mapping.extractUrlParams(path);
+    }
+    
+    try {
+        Class<?> controllerClass = Class.forName(mapping.getClassName());
+        Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
         
-        Method method = mapping.getMethod();
+        // Préparer les arguments (avec support @RequestBody pour JSON)
+        Object[] methodArgs = prepareMethodArgumentsWithJson(method, urlParams, request, isJson);
+        Object result = method.invoke(controllerInstance, methodArgs);
         
-        // Si urlParams est null, les extraire
-        if (urlParams == null && mapping.hasDynamicParams()) {
-            urlParams = mapping.extractUrlParams(path);
+        // Si c'est une méthode @Json, retourner du JSON
+        if (isJson) {
+            handleJsonResponse(response, result);
+        } else {
+            // Sinon, comportement normal (HTML)
+            handleMethodResult(request, response, result, controllerClass, method, path);
         }
         
-        try {
-            Class<?> controllerClass = Class.forName(mapping.getClassName());
-            Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
-            
-            Object[] methodArgs = prepareMethodArguments(method, urlParams, request);
-            Object result = method.invoke(controllerInstance, methodArgs);
-            
-            handleMethodResult(request, response, result, controllerClass, method, path);
-            
-        } catch (Exception e) {
-            e.printStackTrace();
+    } catch (Exception e) {
+        e.printStackTrace();
+        if (isJson) {
+            handleJsonError(response, e);
+        } else {
             showErrorPage(response, e);
         }
     }
+}
+
+// Nouvelle méthode pour préparer les arguments avec support JSON
+private Object[] prepareMethodArgumentsWithJson(Method method, Map<String, String> urlParams, 
+                                                HttpServletRequest request, boolean isJsonMethod) 
+        throws Exception {
+    
+    Class<?>[] paramTypes = method.getParameterTypes();
+    java.lang.reflect.Parameter[] parameters = method.getParameters();
+    Object[] args = new Object[paramTypes.length];
+    
+    // Créer la Map complète de tous les paramètres
+    Map<String, Object> allParams = buildAllParamsMap(urlParams, request);
+    
+    Map<String, String> remainingUrlParams = urlParams != null ? 
+        new HashMap<>(urlParams) : new HashMap<>();
+    
+    System.out.println("\n Résolution des paramètres pour " + method.getName() + "()");
+    if (isJsonMethod) {
+        System.out.println("    Mode JSON activé");
+    }
+    
+    for (int i = 0; i < parameters.length; i++) {
+        java.lang.reflect.Parameter param = parameters[i];
+        Class<?> paramType = paramTypes[i];
+        
+        // 1. Vérifier si c'est un @RequestBody (parse JSON body)
+        if (param.isAnnotationPresent(RequestBody.class)) {
+            String jsonBody = readRequestBody(request);
+            Object parsedObject = parseJsonToObject(jsonBody, paramType);
+            args[i] = parsedObject;
+            System.out.println("    @RequestBody parsé : " + paramType.getSimpleName());
+            continue;
+        }
+        
+        // 2. Vérifier si c'est un paramètre Map<String, Object>
+        if (isParamsMap(paramType, param)) {
+            // Si Content-Type = application/json ET pas @RequestBody, parser le body en Map
+            if (isJsonContentType(request) && !hasRequestBodyParam(method)) {
+                String jsonBody = readRequestBody(request);
+                Map<String, Object> jsonMap = parseJsonToMap(jsonBody);
+                args[i] = jsonMap;
+                System.out.println("    Map<String, Object> depuis JSON body");
+            } else {
+                args[i] = allParams;
+                System.out.println("    Map<String, Object> depuis params");
+            }
+            continue;
+        }
+        
+        // 3. Vérifier si c'est un objet custom à binder
+        if (isCustomObject(paramType)) {
+            // Si Content-Type = application/json, parser depuis le body
+            if (isJsonContentType(request) && !hasRequestBodyParam(method)) {
+                String jsonBody = readRequestBody(request);
+                Object parsedObject = parseJsonToObject(jsonBody, paramType);
+                args[i] = parsedObject;
+                System.out.println("    Objet bindé depuis JSON body : " + paramType.getSimpleName());
+            } else {
+                // Sinon, binding normal depuis params
+                Object boundObject = bindObject(paramType, request, allParams);
+                args[i] = boundObject;
+                System.out.println("    Objet bindé depuis params : " + paramType.getSimpleName());
+            }
+            continue;
+        }
+        
+        // 4. Traitement normal des paramètres primitifs
+        String paramValue = null;
+        
+        Param paramAnnotation = param.getAnnotation(Param.class);
+        if (paramAnnotation != null) {
+            String paramName = paramAnnotation.value();
+            if (remainingUrlParams.containsKey(paramName)) {
+                paramValue = remainingUrlParams.get(paramName);
+                remainingUrlParams.remove(paramName);
+            } else {
+                paramValue = request.getParameter(paramName);
+            }
+        } else {
+            String paramName = param.getName();
+            if (remainingUrlParams.containsKey(paramName)) {
+                paramValue = remainingUrlParams.get(paramName);
+                remainingUrlParams.remove(paramName);
+            } else if (!remainingUrlParams.isEmpty()) {
+                String firstKey = remainingUrlParams.keySet().iterator().next();
+                paramValue = remainingUrlParams.get(firstKey);
+                remainingUrlParams.remove(firstKey);
+            } else {
+                paramValue = request.getParameter(paramName);
+            }
+        }
+        
+        args[i] = paramValue != null ? convertParameter(paramValue, paramType) : getDefaultValue(paramType);
+    }
+    
+    return args;
+}
+
+// Vérifier si la requête a un Content-Type JSON
+private boolean isJsonContentType(HttpServletRequest request) {
+    String contentType = request.getContentType();
+    return contentType != null && contentType.toLowerCase().contains("application/json");
+}
+
+// Vérifier si la méthode a un paramètre @RequestBody
+private boolean hasRequestBodyParam(Method method) {
+    for (java.lang.reflect.Parameter param : method.getParameters()) {
+        if (param.isAnnotationPresent(RequestBody.class)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Lire le body de la requête
+private String readRequestBody(HttpServletRequest request) throws IOException {
+    StringBuilder buffer = new StringBuilder();
+    java.io.BufferedReader reader = request.getReader();
+    String line;
+    while ((line = reader.readLine()) != null) {
+        buffer.append(line);
+    }
+    return buffer.toString();
+}
+
+// Parser JSON vers un objet avec Jackson
+private Object parseJsonToObject(String json, Class<?> targetClass) throws Exception {
+    com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+    
+    // Configuration pour gérer les dates
+    mapper.findAndRegisterModules();
+    mapper.configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+    
+    return mapper.readValue(json, targetClass);
+}
+
+// Parser JSON vers une Map
+private Map<String, Object> parseJsonToMap(String json) throws Exception {
+    com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+    return mapper.readValue(json, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+}
+
+// Gérer la réponse JSON
+private void handleJsonResponse(HttpServletResponse response, Object result) throws IOException {
+    response.setContentType("application/json;charset=UTF-8");
+    response.setHeader("Cache-Control", "no-cache");
+    
+    com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+    mapper.findAndRegisterModules();
+    mapper.configure(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
+    
+    JsonResponse jsonResponse;
+    
+    // Si le résultat est déjà une JsonResponse, l'utiliser directement
+    if (result instanceof JsonResponse) {
+        jsonResponse = (JsonResponse) result;
+    } else {
+        // Sinon, créer une JsonResponse avec le résultat
+        jsonResponse = new JsonResponse(200, result);
+    }
+    
+    // Définir le status code HTTP
+    response.setStatus(jsonResponse.getCode());
+    
+    // Écrire le JSON
+    String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(jsonResponse);
+    response.getWriter().write(json);
+    
+    System.out.println(" [JSON] Réponse envoyée : " + jsonResponse.getStatus() + 
+                      " (code " + jsonResponse.getCode() + ")");
+}
+
+// Gérer les erreurs en JSON
+private void handleJsonError(HttpServletResponse response, Exception e) throws IOException {
+    response.setContentType("application/json;charset=UTF-8");
+    
+    JsonResponse errorResponse = new JsonResponse(500, "Erreur serveur : " + e.getMessage());
+    response.setStatus(500);
+    
+    com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+    String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(errorResponse);
+    response.getWriter().write(json);
+    
+    System.out.println(" [JSON] Erreur : " + e.getMessage());
+}
 
     // Les méthodes prepareMethodArguments, convertParameter, getDefaultValue, 
     // handleMethodResult, showErrorPage restent identiques au Sprint 4
