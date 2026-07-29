@@ -300,50 +300,200 @@ public class FrontServlet extends HttpServlet {
     // Les méthodes prepareMethodArguments, convertParameter, getDefaultValue, 
     // handleMethodResult, showErrorPage restent identiques au Sprint 4
     
-    private Object[] prepareMethodArguments(Method method, Map<String, String> urlParams, 
-                                           HttpServletRequest request) {
-        // (Code identique au Sprint 4)
-        Class<?>[] paramTypes = method.getParameterTypes();
-        java.lang.reflect.Parameter[] parameters = method.getParameters();
-        Object[] args = new Object[paramTypes.length];
+    
+private Object[] prepareMethodArguments(Method method, Map<String, String> urlParams, 
+                                       HttpServletRequest request) {
+    Class<?>[] paramTypes = method.getParameterTypes();
+    java.lang.reflect.Parameter[] parameters = method.getParameters();
+    Object[] args = new Object[paramTypes.length];
+    
+    // Créer la Map complète de tous les paramètres
+    Map<String, Object> allParams = buildAllParamsMap(urlParams, request);
+    
+    Map<String, String> remainingUrlParams = urlParams != null ? 
+        new HashMap<>(urlParams) : new HashMap<>();
+    
+    System.out.println("\n Résolution des paramètres pour " + method.getName() + "()");
+    if (!allParams.isEmpty()) {
+        System.out.println("    Paramètres disponibles : " + allParams.keySet());
+    }
+    
+    for (int i = 0; i < parameters.length; i++) {
+        java.lang.reflect.Parameter param = parameters[i];
+        Class<?> paramType = paramTypes[i];
         
-        Map<String, String> remainingUrlParams = urlParams != null ? 
-            new HashMap<>(urlParams) : new HashMap<>();
-        
-        for (int i = 0; i < parameters.length; i++) {
-            java.lang.reflect.Parameter param = parameters[i];
-            Class<?> paramType = paramTypes[i];
-            String paramValue = null;
-            
-            Param paramAnnotation = param.getAnnotation(Param.class);
-            
-            if (paramAnnotation != null) {
-                String paramName = paramAnnotation.value();
-                if (remainingUrlParams.containsKey(paramName)) {
-                    paramValue = remainingUrlParams.get(paramName);
-                    remainingUrlParams.remove(paramName);
-                } else {
-                    paramValue = request.getParameter(paramName);
-                }
-            } else {
-                String paramName = param.getName();
-                if (remainingUrlParams.containsKey(paramName)) {
-                    paramValue = remainingUrlParams.get(paramName);
-                    remainingUrlParams.remove(paramName);
-                } else if (!remainingUrlParams.isEmpty()) {
-                    String firstKey = remainingUrlParams.keySet().iterator().next();
-                    paramValue = remainingUrlParams.get(firstKey);
-                    remainingUrlParams.remove(firstKey);
-                } else {
-                    paramValue = request.getParameter(paramName);
-                }
-            }
-            
-            args[i] = paramValue != null ? convertParameter(paramValue, paramType) : getDefaultValue(paramType);
+        // NOUVEAU : Vérifier si c'est un paramètre Map<String, Object>
+        if (isParamsMap(paramType, param)) {
+            args[i] = allParams;
+            System.out.println("    Map<String, Object> injectée avec " + allParams.size() + " paramètre(s)");
+            continue;
         }
         
-        return args;
+        // Sinon, traitement normal des paramètres
+        String paramValue = null;
+        String paramName = null;
+        String source = "";
+        
+        Param paramAnnotation = param.getAnnotation(Param.class);
+        
+        if (paramAnnotation != null) {
+            paramName = paramAnnotation.value();
+            
+            if (remainingUrlParams.containsKey(paramName)) {
+                paramValue = remainingUrlParams.get(paramName);
+                remainingUrlParams.remove(paramName);
+                source = "URL dynamique {" + paramName + "}";
+            } else {
+                paramValue = request.getParameter(paramName);
+                source = "Formulaire/Query";
+            }
+            
+        } else {
+            paramName = param.getName();
+            
+            if (remainingUrlParams.containsKey(paramName)) {
+                paramValue = remainingUrlParams.get(paramName);
+                remainingUrlParams.remove(paramName);
+                source = "URL dynamique {" + paramName + "}";
+            } else if (!remainingUrlParams.isEmpty()) {
+                String firstKey = remainingUrlParams.keySet().iterator().next();
+                paramValue = remainingUrlParams.get(firstKey);
+                remainingUrlParams.remove(firstKey);
+                source = "URL dynamique {" + firstKey + "}";
+            } else {
+                paramValue = request.getParameter(paramName);
+                source = "Formulaire/Query";
+            }
+        }
+        
+        if (paramValue != null) {
+            args[i] = convertParameter(paramValue, paramType);
+            System.out.println("    [" + source + "] " + paramName + " : " + args[i] + 
+                             " (" + paramType.getSimpleName() + ")");
+        } else {
+            args[i] = getDefaultValue(paramType);
+        }
     }
+    
+    System.out.println();
+    return args;
+}
+
+/**
+ * Vérifier si un paramètre est de type Map<String, Object>
+ */
+private boolean isParamsMap(Class<?> paramType, java.lang.reflect.Parameter param) {
+    if (!Map.class.isAssignableFrom(paramType)) {
+        return false;
+    }
+    
+    // Vérifier les types génériques si possible
+    java.lang.reflect.Type genericType = param.getParameterizedType();
+    if (genericType instanceof java.lang.reflect.ParameterizedType) {
+        java.lang.reflect.ParameterizedType pType = (java.lang.reflect.ParameterizedType) genericType;
+        java.lang.reflect.Type[] typeArgs = pType.getActualTypeArguments();
+        
+        // Vérifier si c'est Map<String, Object>
+        if (typeArgs.length == 2) {
+            boolean isStringKey = typeArgs[0].equals(String.class);
+            boolean isObjectValue = typeArgs[1].equals(Object.class);
+            return isStringKey && isObjectValue;
+        }
+    }
+    
+    // Par défaut, accepter toute Map
+    return true;
+}
+
+/**
+ * Construire la Map complète de tous les paramètres avec conversion automatique
+ */
+private Map<String, Object> buildAllParamsMap(Map<String, String> urlParams, 
+                                              HttpServletRequest request) {
+    Map<String, Object> allParams = new HashMap<>();
+    
+    // 1. Ajouter les paramètres d'URL dynamiques {id}, {userId}, etc.
+    if (urlParams != null) {
+        for (Map.Entry<String, String> entry : urlParams.entrySet()) {
+            Object convertedValue = smartConvert(entry.getValue());
+            allParams.put(entry.getKey(), convertedValue);
+            System.out.println("    URL param : " + entry.getKey() + " = " + convertedValue + 
+                             " (" + convertedValue.getClass().getSimpleName() + ")");
+        }
+    }
+    
+    // 2. Ajouter les paramètres de requête (query string + form data)
+    java.util.Enumeration<String> paramNames = request.getParameterNames();
+    while (paramNames.hasMoreElements()) {
+        String paramName = paramNames.nextElement();
+        String[] paramValues = request.getParameterValues(paramName);
+        
+        if (paramValues.length == 1) {
+            // Un seul paramètre : conversion intelligente
+            Object convertedValue = smartConvert(paramValues[0]);
+            allParams.put(paramName, convertedValue);
+        } else {
+            // Plusieurs paramètres avec le même nom : créer un tableau
+            Object[] convertedArray = new Object[paramValues.length];
+            for (int i = 0; i < paramValues.length; i++) {
+                convertedArray[i] = smartConvert(paramValues[i]);
+            }
+            allParams.put(paramName, convertedArray);
+            System.out.println("    Multi param : " + paramName + " = " + 
+                             java.util.Arrays.toString(convertedArray));
+        }
+    }
+    
+    return allParams;
+}
+
+/**
+ * Conversion intelligente automatique
+ * Essaie de détecter le type et convertir
+ */
+private Object smartConvert(String value) {
+    if (value == null || value.isEmpty()) {
+        return value;
+    }
+    
+    // 1. Essayer boolean
+    if (value.equalsIgnoreCase("true") || value.equalsIgnoreCase("false")) {
+        return Boolean.parseBoolean(value);
+    }
+    
+    // 2. Essayer int
+    try {
+        // Vérifier que c'est un entier pur (pas de point)
+        if (!value.contains(".") && !value.contains(",")) {
+            return Integer.parseInt(value);
+        }
+    } catch (NumberFormatException e) {
+        // Pas un int, continuer
+    }
+    
+    // 3. Essayer double
+    try {
+        if (value.contains(".") || value.contains(",")) {
+            return Double.parseDouble(value.replace(",", "."));
+        }
+    } catch (NumberFormatException e) {
+        // Pas un double, continuer
+    }
+    
+    // 4. Essayer date (format ISO : yyyy-MM-dd)
+    if (value.matches("\\d{4}-\\d{2}-\\d{2}")) {
+        try {
+            return java.time.LocalDate.parse(value);
+        } catch (Exception e) {
+            // Pas une date valide
+        }
+    }
+    
+    // 5. Par défaut : String
+    return value;
+}
+
+// Les autres méthodes restent identiques (convertParameter, getDefaultValue, etc.)
 
     private Object convertParameter(String value, Class<?> targetType) {
         if (value == null) return null;
