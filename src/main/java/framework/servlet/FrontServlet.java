@@ -1,24 +1,36 @@
 package framework.servlet;
 
 import framework.annotations.*;
+import framework.service.FileUpload;
 import framework.service.JsonResponse;
 import framework.service.Mapping;
 import framework.service.ModelView;
 import framework.service.ScanController;
 import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.MultipartConfig;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.Part;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.lang.reflect.Method;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+@MultipartConfig(
+    maxFileSize = 10485760,      // 10 MB
+    maxRequestSize = 52428800,   // 50 MB
+    fileSizeThreshold = 1048576  // 1 MB
+)
 public class FrontServlet extends HttpServlet {
 
     // Structure : urlMappings.get("GET").get("/users") → Mapping
@@ -317,6 +329,8 @@ public class FrontServlet extends HttpServlet {
 }
 
 // Nouvelle méthode pour préparer les arguments avec support JSON
+
+// Modifier prepareMethodArgumentsWithJson pour supporter les fichiers
 private Object[] prepareMethodArgumentsWithJson(Method method, Map<String, String> urlParams, 
                                                 HttpServletRequest request, boolean isJsonMethod) 
         throws Exception {
@@ -325,22 +339,96 @@ private Object[] prepareMethodArgumentsWithJson(Method method, Map<String, Strin
     java.lang.reflect.Parameter[] parameters = method.getParameters();
     Object[] args = new Object[paramTypes.length];
     
+    // Vérifier si c'est un multipart request
+    boolean isMultipart = request.getContentType() != null && 
+                         request.getContentType().toLowerCase().startsWith("multipart/form-data");
+    
     // Créer la Map complète de tous les paramètres
-    Map<String, Object> allParams = buildAllParamsMap(urlParams, request);
+    Map<String, Object> allParams = isMultipart ? 
+        buildParamsMapFromMultipart(request) : 
+        buildAllParamsMap(urlParams, request);
     
     Map<String, String> remainingUrlParams = urlParams != null ? 
         new HashMap<>(urlParams) : new HashMap<>();
     
     System.out.println("\n Résolution des paramètres pour " + method.getName() + "()");
-    if (isJsonMethod) {
-        System.out.println("    Mode JSON activé");
+    if (isMultipart) {
+        System.out.println("    Mode Multipart/Upload activé");
     }
     
     for (int i = 0; i < parameters.length; i++) {
         java.lang.reflect.Parameter param = parameters[i];
         Class<?> paramType = paramTypes[i];
         
-        // 1. Vérifier si c'est un @RequestBody (parse JSON body)
+        // 1. NOUVEAU : Vérifier si c'est un fichier uploadé (Part)
+        if (paramType == Part.class) {
+            String paramName = param.getName();
+            Part part = request.getPart(paramName);
+            args[i] = part;
+            if (part != null) {
+                System.out.println("    Part uploadé : " + paramName + 
+                                 " (" + part.getSize() + " octets)");
+            }
+            continue;
+        }
+        
+        // 2. NOUVEAU : Vérifier si c'est un FileUpload
+        if (paramType == FileUpload.class) {
+            String paramName = param.getName();
+            Part part = request.getPart(paramName);
+            if (part != null && part.getSize() > 0) {
+                args[i] = new FileUpload(part);
+                System.out.println("    FileUpload : " + ((FileUpload)args[i]).getFilename() + 
+                                 " (" + part.getSize() + " octets)");
+            } else {
+                args[i] = null;
+                System.out.println("    Aucun fichier uploadé pour : " + paramName);
+            }
+            continue;
+        }
+        
+        // 3. NOUVEAU : Vérifier si c'est un tableau de FileUpload
+        if (paramType == FileUpload[].class) {
+            String paramName = param.getName();
+            Collection<Part> parts = request.getParts().stream()
+                .filter(p -> paramName.equals(p.getName()) && p.getSize() > 0)
+                .collect(java.util.stream.Collectors.toList());
+            
+            FileUpload[] uploads = new FileUpload[parts.size()];
+            int idx = 0;
+            for (Part part : parts) {
+                uploads[idx++] = new FileUpload(part);
+            }
+            args[i] = uploads;
+            System.out.println("    FileUpload[] : " + uploads.length + " fichier(s)");
+            continue;
+        }
+        
+        // 4. NOUVEAU : Vérifier si c'est une List<FileUpload>
+        if (paramType == List.class || paramType == java.util.ArrayList.class) {
+            // Vérifier les génériques si possible
+            java.lang.reflect.Type genericType = param.getParameterizedType();
+            if (genericType instanceof java.lang.reflect.ParameterizedType) {
+                java.lang.reflect.ParameterizedType pType = 
+                    (java.lang.reflect.ParameterizedType) genericType;
+                if (pType.getActualTypeArguments()[0] == FileUpload.class) {
+                    String paramName = param.getName();
+                    Collection<Part> parts = request.getParts().stream()
+                        .filter(p -> paramName.equals(p.getName()) && p.getSize() > 0)
+                        .collect(java.util.stream.Collectors.toList());
+                    
+                    List<FileUpload> uploads = new ArrayList<>();
+                    for (Part part : parts) {
+                        uploads.add(new FileUpload(part));
+                    }
+                    args[i] = uploads;
+                    System.out.println("    List<FileUpload> : " + uploads.size() + " fichier(s)");
+                    continue;
+                }
+            }
+        }
+        
+        // 5. Vérifier si c'est un @RequestBody
         if (param.isAnnotationPresent(RequestBody.class)) {
             String jsonBody = readRequestBody(request);
             Object parsedObject = parseJsonToObject(jsonBody, paramType);
@@ -349,39 +437,29 @@ private Object[] prepareMethodArgumentsWithJson(Method method, Map<String, Strin
             continue;
         }
         
-        // 2. Vérifier si c'est un paramètre Map<String, Object>
+        // 6. Vérifier si c'est un paramètre Map<String, Object>
         if (isParamsMap(paramType, param)) {
-            // Si Content-Type = application/json ET pas @RequestBody, parser le body en Map
-            if (isJsonContentType(request) && !hasRequestBodyParam(method)) {
-                String jsonBody = readRequestBody(request);
-                Map<String, Object> jsonMap = parseJsonToMap(jsonBody);
-                args[i] = jsonMap;
-                System.out.println("    Map<String, Object> depuis JSON body");
-            } else {
-                args[i] = allParams;
-                System.out.println("    Map<String, Object> depuis params");
-            }
+            args[i] = allParams;
+            System.out.println("    Map<String, Object> : " + allParams.size() + " paramètre(s)");
             continue;
         }
         
-        // 3. Vérifier si c'est un objet custom à binder
+        // 7. Vérifier si c'est un objet custom à binder
         if (isCustomObject(paramType)) {
-            // Si Content-Type = application/json, parser depuis le body
             if (isJsonContentType(request) && !hasRequestBodyParam(method)) {
                 String jsonBody = readRequestBody(request);
                 Object parsedObject = parseJsonToObject(jsonBody, paramType);
                 args[i] = parsedObject;
-                System.out.println("    Objet bindé depuis JSON body : " + paramType.getSimpleName());
+                System.out.println("    Objet bindé depuis JSON : " + paramType.getSimpleName());
             } else {
-                // Sinon, binding normal depuis params
                 Object boundObject = bindObject(paramType, request, allParams);
                 args[i] = boundObject;
-                System.out.println("    Objet bindé depuis params : " + paramType.getSimpleName());
+                System.out.println("    Objet bindé : " + paramType.getSimpleName());
             }
             continue;
         }
         
-        // 4. Traitement normal des paramètres primitifs
+        // 8. Traitement normal des paramètres primitifs
         String paramValue = null;
         
         Param paramAnnotation = param.getAnnotation(Param.class);
@@ -411,6 +489,37 @@ private Object[] prepareMethodArgumentsWithJson(Method method, Map<String, Strin
     }
     
     return args;
+}
+
+
+// Construire la Map depuis un multipart request
+private Map<String, Object> buildParamsMapFromMultipart(HttpServletRequest request) throws Exception {
+    Map<String, Object> params = new HashMap<>();
+    
+    // Récupérer tous les parts
+    Collection<Part> parts = request.getParts();
+    
+    for (Part part : parts) {
+        String name = part.getName();
+        
+        // Si c'est un fichier (a un filename)
+        if (part.getSubmittedFileName() != null && !part.getSubmittedFileName().isEmpty()) {
+            if (part.getSize() > 0) {
+                // Ne pas mettre dans la map, sera géré par FileUpload
+                continue;
+            }
+        } else {
+            // C'est un champ texte normal
+            String value = new BufferedReader(
+                new InputStreamReader(part.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))
+                .lines()
+                .collect(java.util.stream.Collectors.joining("\n"));
+            
+            params.put(name, smartConvert(value));
+        }
+    }
+    
+    return params;
 }
 
 // Vérifier si la requête a un Content-Type JSON
