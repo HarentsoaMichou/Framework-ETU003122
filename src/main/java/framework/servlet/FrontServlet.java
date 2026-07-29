@@ -161,9 +161,10 @@ public class FrontServlet extends HttpServlet {
     // 3. Vérifier si c'est une ressource statique
     URL resource = getServletContext().getResource(path);
     if (resource != null) {
-        RequestDispatcher defaultDispatcher = getServletContext().getNamedDispatcher("default");
-        if (defaultDispatcher != null) {
-            defaultDispatcher.forward(request, response);
+        String dispatcherName = path.endsWith(".jsp") ? "jsp" : "default";
+        RequestDispatcher dispatcher = getServletContext().getNamedDispatcher(dispatcherName);
+        if (dispatcher != null) {
+            dispatcher.forward(request, response);
             return;
         }
     }
@@ -183,8 +184,8 @@ public class FrontServlet extends HttpServlet {
         Class<?> controllerClass = Class.forName(mapping.getClassName());
         Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
         
-        // Préparer les arguments de la méthode
-        Object[] methodArgs = prepareMethodArguments(method, urlParams);
+        // Préparer les arguments de la méthode (avec support formulaire)
+        Object[] methodArgs = prepareMethodArguments(method, urlParams, request);
         
         // Invoquer la méthode avec les arguments
         Object result = method.invoke(controllerInstance, methodArgs);
@@ -199,25 +200,52 @@ public class FrontServlet extends HttpServlet {
 }
 
 // Nouvelle méthode pour préparer les arguments de la méthode
-private Object[] prepareMethodArguments(Method method, Map<String, String> urlParams) {
+private Object[] prepareMethodArguments(Method method, Map<String, String> urlParams, 
+                                       HttpServletRequest request) {
     Class<?>[] paramTypes = method.getParameterTypes();
+    java.lang.reflect.Parameter[] parameters = method.getParameters();
     Object[] args = new Object[paramTypes.length];
     
-    if (urlParams == null || urlParams.isEmpty()) {
-        return args;
-    }
-    
-    // Pour l'instant, on suppose que les paramètres de la méthode
-    // correspondent aux paramètres de l'URL dans l'ordre
-    int paramIndex = 0;
-    for (String paramValue : urlParams.values()) {
-        if (paramIndex < paramTypes.length) {
-            args[paramIndex] = convertParameter(paramValue, paramTypes[paramIndex]);
-            paramIndex++;
+    for (int i = 0; i < parameters.length; i++) {
+        java.lang.reflect.Parameter param = parameters[i];
+        Class<?> paramType = paramTypes[i];
+        
+        // 1. D'abord, vérifier les paramètres d'URL (/{id})
+        if (urlParams != null && !urlParams.isEmpty() && i < urlParams.size()) {
+            String urlParamValue = (String) urlParams.values().toArray()[i];
+            args[i] = convertParameter(urlParamValue, paramType);
+            continue;
+        }
+        
+        // 2. Ensuite, chercher dans les paramètres de requête (formulaire, query string)
+        // Le nom du paramètre de la méthode doit correspondre au nom du champ du formulaire
+        String paramName = param.getName(); // Exemple: "nom", "age", "email"
+        String paramValue = request.getParameter(paramName);
+        
+        if (paramValue != null) {
+            args[i] = convertParameter(paramValue, paramType);
+            System.out.println(" Paramètre formulaire : " + paramName + " = " + paramValue + 
+                             " (converti en " + paramType.getSimpleName() + ")");
+        } else {
+            // Si le paramètre n'est pas trouvé, mettre null ou valeur par défaut
+            args[i] = getDefaultValue(paramType);
+            System.out.println(" Paramètre non trouvé : " + paramName + "  valeur par défaut");
         }
     }
     
     return args;
+}
+
+private Object getDefaultValue(Class<?> type) {
+    if (type == int.class) return 0;
+    if (type == long.class) return 0L;
+    if (type == double.class) return 0.0;
+    if (type == float.class) return 0.0f;
+    if (type == boolean.class) return false;
+    if (type == char.class) return '\0';
+    if (type == byte.class) return (byte) 0;
+    if (type == short.class) return (short) 0;
+    return null;
 }
 
 // Nouvelle méthode pour convertir les types
@@ -317,6 +345,13 @@ private void handleMethodResult(HttpServletRequest request, HttpServletResponse 
         
         if (modelView.getView() != null && !modelView.getView().isEmpty()) {
             String viewPath = "/" + modelView.getView();
+
+            // --- AJOUT : Transférer les données du ModelView vers la requête ---
+        if (modelView.getData() != null) {
+            for (Map.Entry<String, Object> entry : modelView.getData().entrySet()) {
+                request.setAttribute(entry.getKey(), entry.getValue());
+            }
+        }
             
             System.out.println(" [ModelView] Forward vers : " + viewPath);
             

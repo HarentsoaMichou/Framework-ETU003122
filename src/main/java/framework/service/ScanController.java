@@ -110,7 +110,10 @@ public class ScanController {
                 scanAllClasses(file, newPackage, classes);
                 
             } else if (file.getName().endsWith(".class")) {
-                String className = packageName + "." + file.getName().substring(0, file.getName().length() - 6);
+                String className = packageName.isEmpty() 
+    ? file.getName().substring(0, file.getName().length() - 6)
+    : packageName + "." + file.getName().substring(0, file.getName().length() - 6);
+
                 
                 try {
                     Class<?> clazz = Class.forName(className);
