@@ -1,10 +1,13 @@
 framework\annotations\AnnotationMethode.class
 framework\servlet\FrontServlet.class
 framework\annotations\Post.class
+framework\exceptions\FileTooLargeException.class
 framework\annotations\RequestMapping.class
 framework\service\ScanController.class
 framework\annotations\AnnotationClasse.class
+framework\exceptions\InvalidFileTypeException.class
 framework\service\JsonResponse.class
+framework\service\FileUpload.class
 framework\service\Mapping.class
 framework\annotations\Get.class
 framework\annotations\RequestBody.class
