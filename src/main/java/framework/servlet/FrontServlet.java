@@ -204,32 +204,60 @@ private Object[] prepareMethodArguments(Method method, Map<String, String> urlPa
                                        HttpServletRequest request) {
     Class<?>[] paramTypes = method.getParameterTypes();
     java.lang.reflect.Parameter[] parameters = method.getParameters();
+    java.lang.annotation.Annotation[][] paramAnnotations = method.getParameterAnnotations();
     Object[] args = new Object[paramTypes.length];
+    
+    // Compteur pour les paramètres d'URL (ceux sans @Param)
+    int urlParamIndex = 0;
+    java.util.List<String> urlParamValues = urlParams != null ? 
+        new java.util.ArrayList<>(urlParams.values()) : new java.util.ArrayList<>();
     
     for (int i = 0; i < parameters.length; i++) {
         java.lang.reflect.Parameter param = parameters[i];
         Class<?> paramType = paramTypes[i];
+        String paramValue = null;
+        String paramName = null;
         
-        // 1. D'abord, vérifier les paramètres d'URL (/{id})
-        if (urlParams != null && !urlParams.isEmpty() && i < urlParams.size()) {
-            String urlParamValue = (String) urlParams.values().toArray()[i];
-            args[i] = convertParameter(urlParamValue, paramType);
-            continue;
+        // 1. Vérifier si le paramètre a l'annotation @Param
+        framework.annotations.Param paramAnnotation = param.getAnnotation(framework.annotations.Param.class);
+        
+        if (paramAnnotation != null) {
+            // Utiliser le nom spécifié dans @Param
+            paramName = paramAnnotation.value();
+            paramValue = request.getParameter(paramName);
+            
+            System.out.println(" @Param(\"" + paramName + "\") trouvé → valeur : " + paramValue);
+            
+        } else {
+            // Pas d'annotation @Param
+            // 2. D'abord, essayer de prendre depuis les paramètres d'URL
+            if (urlParamIndex < urlParamValues.size()) {
+                paramValue = urlParamValues.get(urlParamIndex);
+                paramName = "URL param #" + urlParamIndex;
+                urlParamIndex++;
+                
+                System.out.println(" Paramètre URL : " + paramName + " = " + paramValue);
+                
+            } else {
+                // 3. Ensuite, chercher dans les paramètres de requête par nom de variable
+                paramName = param.getName();
+                paramValue = request.getParameter(paramName);
+                
+                if (paramValue != null) {
+                    System.out.println(" Paramètre formulaire (auto) : " + paramName + " = " + paramValue);
+                } else {
+                    System.out.println(" Paramètre non trouvé : " + paramName);
+                }
+            }
         }
         
-        // 2. Ensuite, chercher dans les paramètres de requête (formulaire, query string)
-        // Le nom du paramètre de la méthode doit correspondre au nom du champ du formulaire
-        String paramName = param.getName(); // Exemple: "nom", "age", "email"
-        String paramValue = request.getParameter(paramName);
-        
+        // Convertir et assigner la valeur
         if (paramValue != null) {
             args[i] = convertParameter(paramValue, paramType);
-            System.out.println(" Paramètre formulaire : " + paramName + " = " + paramValue + 
-                             " (converti en " + paramType.getSimpleName() + ")");
+            System.out.println("    Converti en " + paramType.getSimpleName() + " : " + args[i]);
         } else {
-            // Si le paramètre n'est pas trouvé, mettre null ou valeur par défaut
             args[i] = getDefaultValue(paramType);
-            System.out.println(" Paramètre non trouvé : " + paramName + "  valeur par défaut");
+            System.out.println("    Valeur par défaut : " + args[i]);
         }
     }
     
