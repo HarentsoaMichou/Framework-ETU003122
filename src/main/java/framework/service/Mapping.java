@@ -37,7 +37,7 @@ public class Mapping {
      * → Map("id" -> "123", "postId" -> "456")
      */
     public Map<String, String> extractUrlParams(String requestUrl) {
-        Map<String, String> params = new HashMap<>();
+        Map<String, String> params = new java.util.LinkedHashMap<>();
         
         // Extraire les noms des paramètres depuis le pattern
         Pattern namePattern = Pattern.compile("\\{([^}]+)\\}");
