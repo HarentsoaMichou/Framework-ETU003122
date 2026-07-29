@@ -204,49 +204,71 @@ private Object[] prepareMethodArguments(Method method, Map<String, String> urlPa
                                        HttpServletRequest request) {
     Class<?>[] paramTypes = method.getParameterTypes();
     java.lang.reflect.Parameter[] parameters = method.getParameters();
-    java.lang.annotation.Annotation[][] paramAnnotations = method.getParameterAnnotations();
     Object[] args = new Object[paramTypes.length];
     
-    // Compteur pour les paramètres d'URL (ceux sans @Param)
-    int urlParamIndex = 0;
-    java.util.List<String> urlParamValues = urlParams != null ? 
-        new java.util.ArrayList<>(urlParams.values()) : new java.util.ArrayList<>();
+    // Pour tracker les paramètres d'URL déjà utilisés
+    Map<String, String> remainingUrlParams = urlParams != null ? 
+        new HashMap<>(urlParams) : new HashMap<>();
+    
+    System.out.println("\n Résolution des paramètres pour " + method.getName() + "()");
+    if (!remainingUrlParams.isEmpty()) {
+        System.out.println("   URL params disponibles : " + remainingUrlParams);
+    }
     
     for (int i = 0; i < parameters.length; i++) {
         java.lang.reflect.Parameter param = parameters[i];
         Class<?> paramType = paramTypes[i];
         String paramValue = null;
         String paramName = null;
+        String source = "";
         
         // 1. Vérifier si le paramètre a l'annotation @Param
         framework.annotations.Param paramAnnotation = param.getAnnotation(framework.annotations.Param.class);
         
         if (paramAnnotation != null) {
-            // Utiliser le nom spécifié dans @Param
             paramName = paramAnnotation.value();
-            paramValue = request.getParameter(paramName);
             
-            System.out.println(" @Param(\"" + paramName + "\") trouvé → valeur : " + paramValue);
+            // a) D'abord chercher dans les paramètres d'URL par nom
+            if (remainingUrlParams.containsKey(paramName)) {
+                paramValue = remainingUrlParams.get(paramName);
+                remainingUrlParams.remove(paramName);
+                source = "URL dynamique {" + paramName + "}";
+                System.out.println("    @Param(\"" + paramName + "\") → trouvé dans URL : " + paramValue);
+            }
+            // b) Sinon chercher dans les paramètres de requête
+            else {
+                paramValue = request.getParameter(paramName);
+                source = "Formulaire/Query";
+                System.out.println("    @Param(\"" + paramName + "\") → trouvé dans requête : " + paramValue);
+            }
             
         } else {
             // Pas d'annotation @Param
-            // 2. D'abord, essayer de prendre depuis les paramètres d'URL
-            if (urlParamIndex < urlParamValues.size()) {
-                paramValue = urlParamValues.get(urlParamIndex);
-                paramName = "URL param #" + urlParamIndex;
-                urlParamIndex++;
-                
-                System.out.println(" Paramètre URL : " + paramName + " = " + paramValue);
-                
-            } else {
-                // 3. Ensuite, chercher dans les paramètres de requête par nom de variable
-                paramName = param.getName();
+            paramName = param.getName();
+            
+            // a) D'abord chercher dans les paramètres d'URL par nom de variable
+            if (remainingUrlParams.containsKey(paramName)) {
+                paramValue = remainingUrlParams.get(paramName);
+                remainingUrlParams.remove(paramName);
+                source = "URL dynamique {" + paramName + "} (auto)";
+                System.out.println("    Paramètre \"" + paramName + "\" → trouvé dans URL : " + paramValue);
+            }
+            // b) Sinon prendre le premier paramètre d'URL restant (ordre)
+            else if (!remainingUrlParams.isEmpty()) {
+                String firstKey = remainingUrlParams.keySet().iterator().next();
+                paramValue = remainingUrlParams.get(firstKey);
+                remainingUrlParams.remove(firstKey);
+                source = "URL dynamique {" + firstKey + "} (ordre)";
+                System.out.println("    Paramètre \"" + paramName + "\" → pris depuis URL {" + firstKey + "} : " + paramValue);
+            }
+            // c) Sinon chercher dans les paramètres de requête
+            else {
                 paramValue = request.getParameter(paramName);
-                
+                source = "Formulaire/Query (auto)";
                 if (paramValue != null) {
-                    System.out.println(" Paramètre formulaire (auto) : " + paramName + " = " + paramValue);
+                    System.out.println("    Paramètre \"" + paramName + "\" → trouvé dans requête : " + paramValue);
                 } else {
-                    System.out.println(" Paramètre non trouvé : " + paramName);
+                    System.out.println("    Paramètre \"" + paramName + "\" → non trouvé");
                 }
             }
         }
@@ -254,13 +276,14 @@ private Object[] prepareMethodArguments(Method method, Map<String, String> urlPa
         // Convertir et assigner la valeur
         if (paramValue != null) {
             args[i] = convertParameter(paramValue, paramType);
-            System.out.println("    Converti en " + paramType.getSimpleName() + " : " + args[i]);
+            System.out.println("      [" + source + "] Converti en " + paramType.getSimpleName() + " : " + args[i]);
         } else {
             args[i] = getDefaultValue(paramType);
-            System.out.println("    Valeur par défaut : " + args[i]);
+            System.out.println("       Valeur par défaut : " + args[i]);
         }
     }
     
+    System.out.println();
     return args;
 }
 
