@@ -11,39 +11,30 @@ public class Mapping {
     private String className;
     private Method method;
     private String url;
+    private String httpMethod; // "GET", "POST", ou "ALL"
     
     public Mapping() {
     }
 
-    public Mapping(String className, Method method, String url) {
+    public Mapping(String className, Method method, String url, String httpMethod) {
         this.className = className;
         this.method = method;
         this.url = url;
+        this.httpMethod = httpMethod;
     }
     
-    /**
-     * Vérifie si l'URL correspond au pattern avec paramètres
-     * Exemple : /api/users/{id} correspond à /api/users/123
-     */
     public boolean matchesUrl(String requestUrl) {
         String pattern = url.replaceAll("\\{[^}]+\\}", "([^/]+)");
         pattern = "^" + pattern + "$";
         return requestUrl.matches(pattern);
     }
     
-    /**
-     * Extrait les valeurs des paramètres depuis l'URL
-     * Exemple : /api/users/{id}/posts/{postId} + /api/users/123/posts/456
-     * → Map("id" -> "123", "postId" -> "456")
-     */
     public Map<String, String> extractUrlParams(String requestUrl) {
         Map<String, String> params = new java.util.LinkedHashMap<>();
         
-        // Extraire les noms des paramètres depuis le pattern
         Pattern namePattern = Pattern.compile("\\{([^}]+)\\}");
         Matcher nameMatcher = namePattern.matcher(url);
         
-        // Créer un pattern regex pour matcher l'URL
         String pattern = url.replaceAll("\\{[^}]+\\}", "([^/]+)");
         Pattern valuePattern = Pattern.compile(pattern);
         Matcher valueMatcher = valuePattern.matcher(requestUrl);
@@ -63,13 +54,11 @@ public class Mapping {
         return params;
     }
     
-    /**
-     * Vérifie si l'URL contient des paramètres dynamiques
-     */
     public boolean hasDynamicParams() {
         return url.contains("{") && url.contains("}");
     }
     
+    // Getters et Setters
     public String getClassName() {
         return className;
     }
@@ -92,5 +81,13 @@ public class Mapping {
 
     public void setUrl(String url) {
         this.url = url;
+    }
+    
+    public String getHttpMethod() {
+        return httpMethod;
+    }
+    
+    public void setHttpMethod(String httpMethod) {
+        this.httpMethod = httpMethod;
     }
 }
