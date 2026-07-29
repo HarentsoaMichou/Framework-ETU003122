@@ -6,6 +6,7 @@ import framework.service.JsonResponse;
 import framework.service.Mapping;
 import framework.service.ModelView;
 import framework.service.ScanController;
+import framework.service.AuthManager;
 import framework.service.SessionHandler;
 import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.ServletException;
@@ -36,7 +37,8 @@ public class FrontServlet extends HttpServlet {
 
     // Structure : urlMappings.get("GET").get("/users") → Mapping
     private Map<String, Map<String, Mapping>> urlMappings;
-    private SessionHandler sessionHandler;   
+    private SessionHandler sessionHandler;
+    private AuthManager authManager;  // Sprint 11-bis
 
     @Override
     public void init() throws ServletException {
@@ -44,7 +46,17 @@ public class FrontServlet extends HttpServlet {
         urlMappings.put("GET", new HashMap<>());
         urlMappings.put("POST", new HashMap<>());
         urlMappings.put("ALL", new HashMap<>()); // Pour @AnnotationMethode
-        sessionHandler = new SessionHandler();  
+        sessionHandler = new SessionHandler();
+
+        // Sprint 11-bis : lire les paramètres de sécurité depuis web.xml
+        String userKey   = getServletContext().getInitParameter("session.user.key");
+        String roleKey   = getServletContext().getInitParameter("session.role.key");
+        String loginUrl  = getServletContext().getInitParameter("login.page.url");
+        if (userKey  == null) userKey  = "loggedUser";
+        if (roleKey  == null) roleKey  = "userRoles";
+        if (loginUrl == null) loginUrl = "/login";
+        authManager = new AuthManager(userKey, roleKey, loginUrl);
+        System.out.println(" AuthManager initialisé (userKey=" + userKey + ", loginUrl=" + loginUrl + ")");
         
         
         System.out.println("INITIALISATION DU FRAMEWORK");
@@ -308,10 +320,15 @@ public class FrontServlet extends HttpServlet {
     try {
         Class<?> controllerClass = Class.forName(mapping.getClassName());
         Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
-        
+
+        // Sprint 11-bis : vérifier l'authentification et les rôles AVANT l'invocation
+        if (!checkSecurity(request, response, method, controllerClass)) {
+            return; // accès refusé, réponse déjà envoyée
+        }
+
         //  tracker les Maps de session injectées pour les resynchroniser après
         List<Map<String, Object>> injectedSessionMaps = new ArrayList<>();
-        
+
         // Préparer les arguments (avec support @RequestBody pour JSON et @Session)
         Object[] methodArgs = prepareMethodArgumentsWithJson(method, urlParams, request, isJson, injectedSessionMaps);
         Object result = method.invoke(controllerInstance, methodArgs);
@@ -1140,6 +1157,76 @@ private Object smartConvert(String value) {
     private void showErrorPage(HttpServletResponse response, Exception e) throws IOException {
         response.setContentType("text/html;charset=UTF-8");
         response.getWriter().println("<h1> Erreur</h1><p>" + e.getMessage() + "</p>");
+    }
+
+    /**
+     * Sprint 11-bis : vérifie @Protected et @Role avant d'invoquer une méthode.
+     * Retourne true si l'accès est autorisé, false si la réponse a déjà été envoyée.
+     */
+    private boolean checkSecurity(HttpServletRequest request, HttpServletResponse response,
+                                  Method method, Class<?> controllerClass) throws IOException {
+
+        // 1. Vérifier @Protected sur la classe OU sur la méthode
+        boolean isProtected = controllerClass.isAnnotationPresent(Protected.class)
+                           || method.isAnnotationPresent(Protected.class);
+
+        if (isProtected && !authManager.isAuthenticated(request)) {
+            System.out.println(" [SÉCURITÉ] Accès refusé (@Protected) → redirection login");
+            authManager.redirectToLogin(request, response);
+            return false;
+        }
+
+        // 2. Vérifier @Role sur la méthode
+        if (method.isAnnotationPresent(Role.class)) {
+            Role roleAnnotation = method.getAnnotation(Role.class);
+            String[] requiredRoles = roleAnnotation.role();
+
+            // Doit être connecté
+            if (!authManager.isAuthenticated(request)) {
+                System.out.println(" [SÉCURITÉ] Accès refusé (@Role) → redirection login");
+                authManager.redirectToLogin(request, response);
+                return false;
+            }
+
+            // Doit avoir le bon rôle
+            if (!authManager.hasRequiredRole(request, requiredRoles)) {
+                System.out.println(" [SÉCURITÉ] Rôle insuffisant → 403");
+                send403Page(response, requiredRoles);
+                return false;
+            }
+        }
+
+        return true; // accès autorisé
+    }
+
+    /**
+     * Sprint 11-bis : page 403 Forbidden.
+     */
+    private void send403Page(HttpServletResponse response, String[] requiredRoles) throws IOException {
+        response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+        response.setContentType("text/html;charset=UTF-8");
+        PrintWriter out = response.getWriter();
+
+        String roles = requiredRoles != null ? String.join(", ", requiredRoles) : "";
+
+        out.println("<!DOCTYPE html><html><head><title>403 - Accès interdit</title>");
+        out.println("<style>");
+        out.println("body{font-family:Arial;margin:40px;background:#f5f5f5}");
+        out.println(".container{background:white;padding:30px;border-radius:10px;max-width:600px;margin:0 auto;box-shadow:0 2px 10px rgba(0,0,0,.1)}");
+        out.println("h1{color:#e53935}.badge{display:inline-block;padding:4px 12px;background:#e53935;color:white;border-radius:4px;font-size:14px}");
+        out.println(".box{padding:20px;background:#ffebee;border-left:4px solid #e53935;margin:20px 0;border-radius:0 4px 4px 0}");
+        out.println("a{color:#1976d2;text-decoration:none}a:hover{text-decoration:underline}");
+        out.println("</style></head><body>");
+        out.println("<div class='container'>");
+        out.println("<h1>&#128274; 403 – Accès interdit</h1>");
+        out.println("<div class='box'>");
+        out.println("<p>Vous n'avez pas les droits nécessaires pour accéder à cette ressource.</p>");
+        if (!roles.isEmpty()) {
+            out.println("<p>Rôle(s) requis : <span class='badge'>" + roles + "</span></p>");
+        }
+        out.println("</div>");
+        out.println("<p><a href='javascript:history.back()'>&#8592; Retour</a></p>");
+        out.println("</div></body></html>");
     }
 
     private void show404Page(HttpServletResponse response, String requestedUrl, 
