@@ -9,9 +9,11 @@ framework\exceptions\InvalidFileTypeException.class
 framework\service\JsonResponse.class
 framework\service\FileUpload.class
 framework\service\Mapping.class
+framework\service\SessionHandler.class
 framework\annotations\Get.class
 framework\annotations\RequestBody.class
 framework\servlet\FrontServlet$1.class
 framework\annotations\Json.class
 framework\annotations\Param.class
+framework\annotations\Session.class
 framework\service\ModelView.class
